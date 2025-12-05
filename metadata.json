@@ -1,0 +1,7 @@
+{
+  "name": "Copy of AR Fashion Mirror",
+  "description": "An interactive augmented reality mirror where you can drag and drop virtual clothes and accessories onto your camera feed, with AI style analysis.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
