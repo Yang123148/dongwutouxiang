@@ -1,7 +1,7 @@
 
 import React, { useState, useEffect, useRef } from 'react';
-import { Sparkles, AlertCircle, X, Camera, ScanFace, Hand, Fingerprint, Scissors, Trash2, RotateCcw } from 'lucide-react';
-import { Asset, ASSETS, StickerItem, Category } from './types';
+import { Sparkles, AlertCircle, X, Camera, ScanFace, Hand, Fingerprint, Scissors, Trash2, RotateCcw, Gamepad2, Trophy, ArrowRight } from 'lucide-react';
+import { Asset, ASSETS, StickerItem, Category, CoinItem, COIN_SVG } from './types';
 import { AssetSelector } from './components/AssetSelector';
 import { StickerCanvas } from './components/StickerCanvas';
 import { analyzeStyle } from './services/geminiService';
@@ -24,6 +24,16 @@ const EFFECT_COOLDOWN_MS = 200;
 const EFFECT_LIFESPAN = 2000; // 2 seconds
 const EFFECT_FADE_DURATION = 500; // Last 500ms
 
+// Game Constants
+const COIN_SPAWN_RATE_MS = 800;
+const BASE_COIN_SPEED = 5;
+const FAST_COIN_SPEED = 9; // Speed up
+const COIN_RADIUS = 40;
+const AVATAR_COLLISION_RADIUS = 80;
+const POINTS_PER_COIN = 10;
+const SPEED_UP_THRESHOLD = 150;
+const WIN_SCORE_THRESHOLD = 400;
+
 const App: React.FC = () => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const requestRef = useRef<number>(0);
@@ -33,6 +43,17 @@ const App: React.FC = () => {
   const [activeStickerId, setActiveStickerId] = useState<string | null>(null);
   const [selectedCategory, setSelectedCategory] = useState<Category>('faces');
   
+  // Game State
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [score, setScore] = useState(0);
+  const [coins, setCoins] = useState<CoinItem[]>([]);
+  const [showWinModal, setShowWinModal] = useState(false);
+
+  // Refs for synchronous loop access
+  const scoreRef = useRef(0);
+  const lastCoinSpawnTimeRef = useRef<number>(0);
+  const coinsRef = useRef<CoinItem[]>([]); // To avoid dependency cycle in loop
+
   // Tracking State
   const interactingIdRef = useRef<string | null>(null); 
   const [isVisionReady, setIsVisionReady] = useState(false);
@@ -63,6 +84,7 @@ const App: React.FC = () => {
   const interactionStateRef = useRef(interactionState); 
   
   useEffect(() => { interactionStateRef.current = interactionState; }, [interactionState]);
+  useEffect(() => { coinsRef.current = coins; }, [coins]); // Sync ref
 
   // AI Analysis State
   const [isAnalyzing, setIsAnalyzing] = useState(false);
@@ -104,7 +126,7 @@ const App: React.FC = () => {
     };
   }, []);
 
-  // Main Tracking Loop (Face + Hand)
+  // Main Tracking Loop (Face + Hand + Game)
   useEffect(() => {
     const loop = () => {
       if (videoRef.current && isVisionReady && videoRef.current.readyState >= 2) {
@@ -116,6 +138,80 @@ const App: React.FC = () => {
         const scaleX = rect.width;
         const scaleY = rect.height;
 
+        // --- GAME LOOP ---
+        if (isPlaying) {
+            // Check Win Condition
+            if (scoreRef.current >= WIN_SCORE_THRESHOLD) {
+                setIsPlaying(false);
+                setShowWinModal(true);
+                setCoins([]);
+                return; // Stop loop this frame
+            }
+
+            // 1. Spawn Coins
+            if (now - lastCoinSpawnTimeRef.current > COIN_SPAWN_RATE_MS) {
+                const spawnX = Math.random() * (scaleX - 100) + 50;
+                const newCoin: CoinItem = {
+                    id: `coin-${now}`,
+                    x: spawnX,
+                    y: -50,
+                    scale: 1,
+                    value: POINTS_PER_COIN,
+                    collected: false
+                };
+                // We use setCoins functional update but also need to keep ref in sync
+                setCoins(prev => [...prev, newCoin]);
+                lastCoinSpawnTimeRef.current = now;
+            }
+
+            // 2. Find Avatar Position for Collision
+            let avatarX = -1000;
+            let avatarY = -1000;
+            if (faceResult && faceResult.faceLandmarks.length > 0) {
+                 const landmarks = faceResult.faceLandmarks[0];
+                 const noseTip = landmarks[1];
+                 avatarX = (1 - noseTip.x) * scaleX;
+                 avatarY = noseTip.y * scaleY;
+            }
+
+            // 3. Update Coins & Check Collision
+            // We read from ref for speed but update state
+            const currentSpeed = scoreRef.current >= SPEED_UP_THRESHOLD ? FAST_COIN_SPEED : BASE_COIN_SPEED;
+
+            setCoins(prevCoins => {
+                const nextCoins: CoinItem[] = [];
+                let scoreIncrement = 0;
+
+                prevCoins.forEach(coin => {
+                    if (coin.collected) return;
+
+                    // Move down
+                    const nextY = coin.y + currentSpeed;
+
+                    // Check Collision
+                    const dx = coin.x - avatarX;
+                    const dy = nextY - avatarY;
+                    const dist = Math.sqrt(dx * dx + dy * dy);
+
+                    if (dist < (COIN_RADIUS + AVATAR_COLLISION_RADIUS)) {
+                        scoreIncrement += coin.value;
+                        // It's collected, don't add to nextCoins
+                    } 
+                    else if (nextY <= scaleY + 50) {
+                        // Keep if on screen
+                        nextCoins.push({ ...coin, y: nextY });
+                    }
+                });
+                
+                if (scoreIncrement > 0) {
+                    scoreRef.current += scoreIncrement;
+                    setScore(scoreRef.current); // Sync UI
+                }
+                
+                return nextCoins;
+            });
+        }
+
         // --- 0. Lifecycle Management (Fade & Destroy Effects) ---
         setStickers(prev => {
           const alive = prev.filter(s => {
@@ -123,7 +219,6 @@ const App: React.FC = () => {
              return (now - s.createdAt) < s.lifespan;
           });
           
-          // Update opacity for fading items
           return alive.map(s => {
              if (s.lifespan && s.createdAt) {
                 const age = now - s.createdAt;
@@ -154,28 +249,23 @@ const App: React.FC = () => {
           const ringTip = landmarks[16];
           const pinkyTip = landmarks[20];
           
-          // Knuckles (MCP) to check extension
           const indexMCP = landmarks[5];
           const middleMCP = landmarks[9];
           const ringMCP = landmarks[13];
           const pinkyMCP = landmarks[17];
 
-          // Mirror logic
           cursorX = (1 - indexTip.x) * scaleX;
           cursorY = indexTip.y * scaleY;
           handDetected = true;
 
-          // Count Fingers (Simple vertical check: Tip higher than Knuckle)
-          // Note: coordinates y increases downwards. So Tip.y < MCP.y means tip is higher.
           const isIndexExt = indexTip.y < indexMCP.y;
           const isMiddleExt = middleTip.y < middleMCP.y;
           const isRingExt = ringTip.y < ringMCP.y;
           const isPinkyExt = pinkyTip.y < pinkyMCP.y;
-          const isThumbExt = Math.abs(thumbTip.x - indexMCP.x) > 0.05; // Thumb is mostly horizontal
+          const isThumbExt = Math.abs(thumbTip.x - indexMCP.x) > 0.05;
 
           fingerCount = (isThumbExt?1:0) + (isIndexExt?1:0) + (isMiddleExt?1:0) + (isRingExt?1:0) + (isPinkyExt?1:0);
 
-          // Detect Thumb-Index Pinch (Resize Gesture)
           const distX = thumbTip.x - indexTip.x;
           const distY = thumbTip.y - indexTip.y;
           pinchDistance = Math.sqrt(distX * distX + distY * distY);
@@ -183,8 +273,6 @@ const App: React.FC = () => {
           if (pinchDistance < RESIZE_START_THRESHOLD) {
              isResizingGesture = true;
           }
-
-          // Open Palm: 5 Fingers open
           if (fingerCount === 5) {
             isOpenPalm = true;
           }
@@ -192,22 +280,17 @@ const App: React.FC = () => {
           setHandCursor({ x: cursorX, y: cursorY, isDetected: true, isResizing: isResizingGesture, isOpenPalm, fingerCount });
 
           // --- GESTURE SWIPE LOGIC ---
-          const currentHandX = landmarks[9].x; // Middle finger knuckle as center
-          if (lastHandPosRef.current && (now - lastGestureTimeRef.current > GESTURE_COOLDOWN_MS)) {
-              const dx = currentHandX - lastHandPosRef.current.x; // Normalized delta
-              // const dy = currentHandX - lastHandPosRef.current.y;
-
+          const currentHandX = landmarks[9].x; 
+          if (lastHandPosRef.current && (now - lastGestureTimeRef.current > GESTURE_COOLDOWN_MS) && !isPlaying) {
+              const dx = currentHandX - lastHandPosRef.current.x; 
               const isSwipe = Math.abs(dx) > SWIPE_VELOCITY_THRESHOLD;
               
               if (isSwipe) {
-                  // 3 Fingers Swipe: Clear Screen
                   if (fingerCount === 3 && isIndexExt && isMiddleExt && isRingExt) {
                       setStickers([]);
                       setActiveStickerId(null);
                       lastGestureTimeRef.current = now;
                   }
-                  
-                  // 4 Fingers Swipe: Change Animal
                   if (fingerCount === 4 && isIndexExt && isMiddleExt && isRingExt && isPinkyExt) {
                       cycleAnimalFace();
                       lastGestureTimeRef.current = now;
@@ -221,22 +304,12 @@ const App: React.FC = () => {
           lastHandPosRef.current = null;
         }
 
-        // --- 2. Interaction Logic ---
-        const currentStickers = stickers; // Note: this might be stale in loop closure if not careful, but stickers state updates usually trigger re-render
-        // However, we rely on setStickers(prev => ...) for updates, so mostly ok. 
+        // --- 2. Interaction Logic (Only when not playing game) ---
         const currentState = interactionStateRef.current;
         
-        if (handDetected) {
+        if (handDetected && !isPlaying) {
           // A. ANIMAL EFFECT SPAWNING (Open Palm)
           if (isOpenPalm && (now - lastEffectSpawnTimeRef.current > EFFECT_COOLDOWN_MS)) {
-             // Find active face sticker from state (using ref or functional update would be safer but let's try direct find on component state)
-             // We need to look at 'stickers' from outer scope, which might be stale.
-             // Best to assume only 1 face exists usually.
-             
-             // To solve stale closure issues in useEffect loop without adding stickers to dependency (which resets loop),
-             // we accept that effect spawning might miss a frame update, but logic generally holds.
-             
-             // Actually, we can check stickers inside setStickers to ensure we match correctly
              setStickers(prevStickers => {
                  const activeFace = prevStickers.find(s => s.category === 'faces');
                  if (activeFace && (now - lastEffectSpawnTimeRef.current > EFFECT_COOLDOWN_MS)) {
@@ -257,7 +330,7 @@ const App: React.FC = () => {
                             category: 'accessories',
                             x: cursorX + offsetX,
                             y: cursorY + offsetY,
-                            scale: 2.0, // Large effect size
+                            scale: 2.0, 
                             rotation: (Math.random() - 0.5) * 40,
                             anchorType: 'none',
                             anchorOffset: {x:0, y:0},
@@ -297,7 +370,6 @@ const App: React.FC = () => {
               return s;
             }));
 
-            // Drop Logic
              if (dropStartTimeRef.current === 0) dropStartTimeRef.current = now;
              const dropProgress = Math.min((now - dropStartTimeRef.current) / DROP_THRESHOLD_MS, 1);
              setInteractionState(prev => ({ ...prev, progress: dropProgress, status: 'dragging' }));
@@ -309,7 +381,7 @@ const App: React.FC = () => {
              }
           } 
           else {
-            // MODE: IDLE or HOVERING (Selection Logic)
+            // MODE: HOVERING / SELECTION
             const element = document.elementFromPoint(cursorX, cursorY);
             let hoveredButtonId: string | null = null;
             let hoveredType: 'button_asset' | 'button_cat' | null = null;
@@ -357,7 +429,7 @@ const App: React.FC = () => {
                 let minDst = Infinity;
 
                 // Only interact with non-expiring stickers
-                const interactableStickers = currentStickers.filter(s => !s.lifespan);
+                const interactableStickers = stickers.filter(s => !s.lifespan);
 
                 for (const s of interactableStickers) {
                   const dx = s.x - cursorX;
@@ -391,7 +463,8 @@ const App: React.FC = () => {
                 }
             }
           }
-        } else {
+        } 
+        else if (!handDetected) {
              if (currentState.status === 'dragging' && currentState.targetId && currentState.targetType === 'sticker') {
                  handleHandDrop(currentState.targetId);
              }
@@ -435,7 +508,31 @@ const App: React.FC = () => {
       requestRef.current = requestAnimationFrame(loop);
     }
     return () => cancelAnimationFrame(requestRef.current);
-  }, [isVisionReady, stickers]); 
+  }, [isVisionReady, isPlaying]); // Removed unstable dependencies from loop
+
+  // Game Logic
+  const handleStartGame = () => {
+    const hasFace = stickers.some(s => s.category === 'faces');
+    if (!hasFace) {
+        alert("Please select an animal avatar first!");
+        return;
+    }
+    setScore(0);
+    scoreRef.current = 0;
+    setCoins([]);
+    setIsPlaying(true);
+    setShowWinModal(false);
+  };
+
+  const handleStopGame = () => {
+      setIsPlaying(false);
+      setCoins([]);
+  };
+  
+  const handleRestart = () => {
+      handleStopGame();
+      setShowWinModal(false);
+  };
 
   const cycleAnimalFace = () => {
     // 1. Find current face
@@ -454,8 +551,6 @@ const App: React.FC = () => {
         // Remove old face, add new one
         const others = prev.filter(s => s.category !== 'faces');
         
-        // We need to spawn it relative to last known face position or screen center
-        // If face is tracked, it will snap immediately next frame.
         const id = Date.now() + 'auto';
         const newFace: StickerItem = {
             id: id,
@@ -604,7 +699,7 @@ const App: React.FC = () => {
   };
 
   const renderCursor = () => {
-      if (!handCursor.isDetected) return null;
+      if (!handCursor.isDetected || isPlaying) return null;
 
       const size = 60;
       const stroke = 4;
@@ -690,6 +785,37 @@ const App: React.FC = () => {
          </div>
       )}
 
+      {/* RENDER GAME COINS */}
+      {isPlaying && (
+         <div className="absolute inset-0 z-30 pointer-events-none">
+            {coins.map(coin => (
+                <div 
+                    key={coin.id} 
+                    className="absolute w-20 h-20 transition-transform duration-75 ease-linear"
+                    style={{ 
+                        transform: `translate(${coin.x - 40}px, ${coin.y - 40}px)`,
+                    }}
+                >
+                     <div dangerouslySetInnerHTML={{ __html: COIN_SVG }} className="w-full h-full drop-shadow-md" />
+                </div>
+            ))}
+            
+            {/* Game Score UI */}
+            <div className="absolute top-24 left-1/2 -translate-x-1/2 flex items-center gap-3 bg-yellow-500/90 text-black px-6 py-3 rounded-full shadow-lg border-2 border-white">
+                <Trophy size={24} strokeWidth={2.5} />
+                <span className="text-2xl font-black font-mono tracking-wider">{score}</span>
+                <span className="text-[10px] uppercase font-bold opacity-60 ml-1">/ {WIN_SCORE_THRESHOLD}</span>
+            </div>
+            
+            <button 
+                onClick={handleStopGame}
+                className="absolute top-6 right-6 pointer-events-auto bg-red-600 text-white px-4 py-2 rounded-full font-bold hover:bg-red-500 shadow-lg"
+            >
+                Quit Game
+            </button>
+         </div>
+      )}
+
       <StickerCanvas 
         stickers={stickers}
         activeId={activeStickerId}
@@ -709,21 +835,73 @@ const App: React.FC = () => {
           </h1>
         </div>
 
-        <button 
-          onClick={handleAIAnalysis}
-          disabled={isAnalyzing}
-          className="pointer-events-auto group flex items-center gap-2 bg-white text-black hover:bg-purple-400 transition-colors px-6 py-3 rounded-full shadow-xl shadow-purple-900/20 active:scale-95 disabled:opacity-50"
-        >
-          {isAnalyzing ? (
-            <div className="animate-spin h-5 w-5 border-2 border-black border-t-transparent rounded-full" />
-          ) : (
-            <Camera size={20} className="group-hover:rotate-12 transition-transform" />
-          )}
-          <span className="font-bold text-sm uppercase tracking-wide">Snap & Rate</span>
-        </button>
+        {!isPlaying && (
+            <button 
+              onClick={handleAIAnalysis}
+              disabled={isAnalyzing}
+              className="pointer-events-auto group flex items-center gap-2 bg-white text-black hover:bg-purple-400 transition-colors px-6 py-3 rounded-full shadow-xl shadow-purple-900/20 active:scale-95 disabled:opacity-50"
+            >
+              {isAnalyzing ? (
+                <div className="animate-spin h-5 w-5 border-2 border-black border-t-transparent rounded-full" />
+              ) : (
+                <Camera size={20} className="group-hover:rotate-12 transition-transform" />
+              )}
+              <span className="font-bold text-sm uppercase tracking-wide">Snap & Rate</span>
+            </button>
+        )}
       </div>
 
-      {stickers.length === 0 && !error && isVisionReady && (
+      {/* START GAME BUTTON (Visible when face selected and not playing) */}
+      {!isPlaying && stickers.some(s => s.category === 'faces') && (
+          <div className="absolute bottom-10 right-10 z-50 animate-in slide-in-from-bottom-10 fade-in duration-500">
+              <button 
+                  onClick={handleStartGame}
+                  className="group relative flex items-center gap-3 bg-gradient-to-r from-yellow-400 to-orange-500 text-black px-8 py-4 rounded-full shadow-[0_0_20px_rgba(234,179,8,0.6)] hover:scale-105 active:scale-95 transition-all"
+              >
+                  <Gamepad2 size={28} strokeWidth={2.5} />
+                  <div className="text-left">
+                      <div className="font-black text-lg leading-none uppercase">Start Game</div>
+                      <div className="text-[10px] font-bold opacity-80 uppercase tracking-widest">Catch Coins</div>
+                  </div>
+                  <ArrowRight size={20} className="group-hover:translate-x-1 transition-transform" />
+                  
+                  {/* Ping Animation */}
+                  <span className="absolute -top-1 -right-1 flex h-4 w-4">
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-white opacity-75"></span>
+                    <span className="relative inline-flex rounded-full h-4 w-4 bg-white"></span>
+                  </span>
+              </button>
+          </div>
+      )}
+
+      {/* WIN MODAL */}
+      {showWinModal && (
+        <div className="absolute inset-0 z-[100] flex items-center justify-center bg-black/80 backdrop-blur-md p-4 animate-in fade-in duration-300">
+          <div className="bg-gradient-to-b from-yellow-600/20 to-gray-900 border border-yellow-500/30 w-full max-w-sm p-8 rounded-[2rem] shadow-2xl relative overflow-hidden text-center">
+             <div className="absolute top-0 left-0 w-full h-full overflow-hidden pointer-events-none">
+                 <div className="absolute top-0 left-1/4 w-32 h-32 bg-yellow-500/20 rounded-full blur-[60px]" />
+             </div>
+             
+             <Trophy size={64} className="text-yellow-400 mx-auto mb-4 drop-shadow-[0_0_15px_rgba(250,204,21,0.5)]" />
+             <h2 className="text-3xl font-black text-white mb-1 uppercase italic">Victory!</h2>
+             <p className="text-yellow-200/80 mb-6 font-medium">You collected all the coins!</p>
+             
+             <div className="bg-black/40 rounded-xl p-4 mb-6 border border-white/10">
+                 <div className="text-sm text-gray-400 uppercase tracking-widest mb-1">Final Score</div>
+                 <div className="text-4xl font-mono font-bold text-white">{scoreRef.current}</div>
+             </div>
+             
+             <button 
+               onClick={handleRestart}
+               className="w-full bg-yellow-500 text-black font-bold py-4 rounded-xl hover:bg-yellow-400 hover:scale-[1.02] active:scale-[0.98] transition-all shadow-lg"
+             >
+               Play Again / Change Avatar
+             </button>
+          </div>
+        </div>
+      )}
+
+      {stickers.length === 0 && !error && isVisionReady && !isPlaying && (
         <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-10 pointer-events-none text-center w-full px-10">
           <div className="flex justify-center gap-4 mb-4">
              <ScanFace className="w-10 h-10 text-white/50 animate-pulse" />
@@ -775,11 +953,13 @@ const App: React.FC = () => {
         </div>
       )}
 
-      <AssetSelector 
-        onSelect={(asset) => handleAddSticker(asset)}
-        selectedCategory={selectedCategory}
-        onCategoryChange={setSelectedCategory}
-      />
+      {!isPlaying && (
+        <AssetSelector 
+            onSelect={(asset) => handleAddSticker(asset)}
+            selectedCategory={selectedCategory}
+            onCategoryChange={setSelectedCategory}
+        />
+      )}
     </div>
   );
 };

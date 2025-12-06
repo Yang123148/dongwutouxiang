@@ -24,6 +24,15 @@ export interface StickerItem {
   lifespan?: number; // ms to exist
 }
 
+export interface CoinItem {
+  id: string;
+  x: number;
+  y: number;
+  scale: number;
+  value: number;
+  collected: boolean;
+}
+
 export interface Asset {
   id: string;
   type: 'emoji' | 'svg';
@@ -50,6 +59,13 @@ const SVG_ASSETS = {
   tshirt_white: `<svg viewBox="0 0 300 300" xmlns="http://www.w3.org/2000/svg"><g transform="translate(50, 0)"><path d="M60 20L40 40L10 30L20 80L50 70L50 190L150 190L150 70L180 80L190 30L160 40L140 20C140 20 120 40 100 40C80 40 60 20 60 20Z" fill="white" stroke="#9CA3AF" stroke-width="2"/><path d="M80 20C80 20 90 35 100 35C110 35 120 20 120 20" fill="none" stroke="#9CA3AF" stroke-width="1"/></g></svg>`,
   
   bowtie: `<svg viewBox="0 0 100 60" xmlns="http://www.w3.org/2000/svg"><path d="M50 30L10 10V50L50 30Z" fill="#DC2626"/><path d="M50 30L90 10V50L50 30Z" fill="#DC2626"/><rect x="45" y="25" width="10" height="10" rx="2" fill="#991B1B"/></svg>`,
+
+  coin: `<svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+    <circle cx="50" cy="50" r="45" fill="#FFD700" stroke="#DAA520" stroke-width="5" />
+    <circle cx="50" cy="50" r="35" fill="none" stroke="#DAA520" stroke-width="2" stroke-dasharray="5,5" />
+    <text x="50" y="65" font-family="Arial, sans-serif" font-size="40" font-weight="bold" fill="#B8860B" text-anchor="middle">$</text>
+    <path d="M30 30 L 40 20" stroke="white" stroke-width="4" opacity="0.6" />
+  </svg>`,
   
   // -- UPDATED ANIMAL FACES --
 
@@ -210,3 +226,5 @@ export const ASSETS: Asset[] = [
   { id: 'a1', type: 'svg', content: SVG_ASSETS.bowtie, category: 'accessories', label: 'Bowtie', anchorType: 'body', defaultScale: 0.8, defaultOffsetY: 0.6 },
   { id: 'a2', type: 'emoji', content: '🧣', category: 'accessories', label: 'Scarf', anchorType: 'body', defaultScale: 1.5, defaultOffsetY: 0.8 },
 ];
+
+export const COIN_SVG = SVG_ASSETS.coin;
