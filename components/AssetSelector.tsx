@@ -8,7 +8,7 @@ interface AssetSelectorProps {
   onCategoryChange: (cat: Category) => void;
 }
 
-const CATEGORIES: Category[] = ['faces', 'hats', 'glasses', 'hair', 'tops', 'accessories'];
+const CATEGORIES: Category[] = ['faces', 'hats', 'glasses', 'accessories'];
 
 export const AssetSelector: React.FC<AssetSelectorProps> = ({ onSelect, selectedCategory, onCategoryChange }) => {
   const filteredAssets = ASSETS.filter(a => a.category === selectedCategory);
